@@ -125,13 +125,8 @@ class NetworkWorker(QObject):
         log.info("connect_to_session called with code: %s", code)
         log.info("Event loop ready: %s", self._loop is not None)
         self._pending_connect_code = code
-        if self._loop:
-            log.info("Scheduling _join_session coroutine")
-            asyncio.run_coroutine_threadsafe(
-                self._join_session(code), self._loop
-            )
-        else:
-            log.error("Event loop is None - cannot schedule join request")
+        # The main loop will detect this and establish connection + send join request
+        log.info("Pending connect code set, main loop will handle connection")
 
     @pyqtSlot()
     def disconnect_session(self) -> None:
@@ -283,7 +278,10 @@ class NetworkWorker(QObject):
             if isinstance(raw, bytes):
                 # Binary frame = video frame
                 if self._authorized:
+                    log.info("Received binary frame: %d bytes", len(raw))
                     self.frame_received.emit(raw)
+                else:
+                    log.warning("Received frame but not authorized")
                 continue
 
             try:
@@ -298,7 +296,7 @@ class NetworkWorker(QObject):
 
     async def _dispatch(self, msg: dict[str, Any]) -> None:
         msg_type = msg.get("type", "")
-        log.debug("Received: %s", msg_type)
+        log.info("Received message: %s - Full: %s", msg_type, msg)
 
         if msg_type == "join_success":
             self.status_changed.emit("Waiting for target user approval…")

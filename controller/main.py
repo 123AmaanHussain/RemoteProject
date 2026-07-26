@@ -50,6 +50,9 @@ def main() -> int:
     window = MainWindow(network_worker=net_thread.worker)
     window.show()
 
+    # ── Pass main window reference to network worker for direct calls (Python 3.13 compatibility)
+    net_thread.worker._main_window = window
+
     # ── Wire signals: GUI → Network ───────────────────────────────────────
     # The user clicked Connect with a code
     window.connect_requested.connect(net_thread.worker.connect_to_session)
