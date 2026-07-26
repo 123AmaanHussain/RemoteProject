@@ -32,6 +32,9 @@ def _show_dialog_on_thread(
     root = tk.Tk()
     root.withdraw()          # Hide the blank Tk window
     root.attributes('-topmost', True)   # Ensure the dialog appears in front
+    root.lift()
+    root.focus_force()
+    root.bell()              # Play OS notification sound
     root.update()
 
     # ── Display the authoritative consent message ────────────────────────

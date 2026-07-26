@@ -11,7 +11,7 @@ import os
 # ─── Network ──────────────────────────────────────────────────────────────────
 
 #: WebSocket URL of the signaling server.
-SIGNALING_URL: str = os.getenv("SIGNALING_URL", "ws://localhost:3000/signal")
+SIGNALING_URL: str = os.getenv("SIGNALING_URL", "wss://remote-desktop-signaling-56cl.onrender.com/signal")
 
 # ─── Reconnection ────────────────────────────────────────────────────────────
 

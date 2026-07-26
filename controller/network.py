@@ -296,6 +296,12 @@ class NetworkWorker(QObject):
             # Inform the main window (separate slot for styled display)
             # We emit status_changed which the window catches
 
+        elif msg_type == "error":
+            err_msg = msg.get("message", "An error occurred on the server.")
+            log.warning("Server returned error: %s", err_msg)
+            self.error_occurred.emit(err_msg)
+            self.session_denied.emit(err_msg)
+
         elif msg_type == "session_active":
             self._authorized = True
             self.session_active.emit()
