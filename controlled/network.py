@@ -208,7 +208,7 @@ class ControlledNetworkClient:
     async def _dispatch(self, msg: dict[str, Any]) -> None:
         """Routes server messages to appropriate handlers."""
         msg_type = msg.get("type", "")
-        log.debug("Received: %s", msg_type)
+        log.info("Received message: %s - Full: %s", msg_type, msg)
 
         if msg_type == "registered":
             code = msg.get("code", "")

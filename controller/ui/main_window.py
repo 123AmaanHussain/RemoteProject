@@ -171,8 +171,10 @@ class MainWindow(QMainWindow):
     input_ready:          pyqtSignal = pyqtSignal(dict)
     clipboard_send:       pyqtSignal = pyqtSignal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, network_worker=None) -> None:
         super().__init__()
+
+        self._network_worker = network_worker  # Store reference for direct calls
 
         self.setWindowTitle(config.WINDOW_TITLE)
         self.resize(1200, 750)
@@ -389,11 +391,18 @@ class MainWindow(QMainWindow):
 
     def _on_connect_clicked(self) -> None:
         code = self._code_input.text().strip()
+        log.info("Connect button clicked. Code: '%s'", code)
         if len(code) != 6 or not code.isdigit():
+            log.warning("Invalid code: '%s' (len=%d, isdigit=%s)", code, len(code), code.isdigit())
             show_toast("Please enter a valid 6-digit numeric code.", level="warning")
             self._code_input.setFocus()
             return
+        log.info("Emitting connect_requested signal with code: %s", code)
         self.connect_requested.emit(code)
+        # TEMPORARY: Direct call to bypass signal/slot issue (Python 3.13 compatibility)
+        if self._network_worker:
+            log.info("Directly calling connect_to_session on worker")
+            self._network_worker.connect_to_session(code)
 
     def _reset_to_connect(self) -> None:
         self._stack.setCurrentIndex(0)

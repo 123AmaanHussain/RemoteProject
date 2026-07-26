@@ -43,12 +43,12 @@ def main() -> int:
     font = QFont("Segoe UI", 10)
     app.setFont(font)
 
-    # ── Create main window ────────────────────────────────────────────────
-    window = MainWindow()
-    window.show()
-
     # ── Create network thread ─────────────────────────────────────────────
     net_thread = NetworkThread(parent=app)
+
+    # ── Create main window ────────────────────────────────────────────────
+    window = MainWindow(network_worker=net_thread.worker)
+    window.show()
 
     # ── Wire signals: GUI → Network ───────────────────────────────────────
     # The user clicked Connect with a code

@@ -121,11 +121,17 @@ class NetworkWorker(QObject):
     @pyqtSlot(str)
     def connect_to_session(self, code: str) -> None:
         """Initiates a join request for the given 6-digit code."""
+        print(f"[DEBUG] connect_to_session called with code: {code}")
+        log.info("connect_to_session called with code: %s", code)
+        log.info("Event loop ready: %s", self._loop is not None)
         self._pending_connect_code = code
         if self._loop:
+            log.info("Scheduling _join_session coroutine")
             asyncio.run_coroutine_threadsafe(
                 self._join_session(code), self._loop
             )
+        else:
+            log.error("Event loop is None - cannot schedule join request")
 
     @pyqtSlot()
     def disconnect_session(self) -> None:
@@ -257,13 +263,16 @@ class NetworkWorker(QObject):
 
     async def _join_session(self, code: str) -> None:
         if self._ws is None:
+            log.error("Cannot join: WebSocket is None")
             return
         self._code = code
-        await self._send({
+        payload = {
             "type":   "join",
             "code":   code,
             "peerId": PEER_ID,
-        })
+        }
+        log.info("Sending join request: %s", payload)
+        await self._send(payload)
         log.info("Join request sent for code: %s", code)
 
     # ─── Receive Loop ────────────────────────────────────────────────────────
