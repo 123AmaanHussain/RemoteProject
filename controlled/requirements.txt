@@ -1,0 +1,22 @@
+# Controlled PC System Tray Agent — Python Dependencies
+# Supports Python 3.11+ (including Python 3.13)
+
+# System tray & icon
+pystray>=0.19.5
+Pillow>=10.3.0
+
+# Screen capture
+mss>=9.0.2
+
+# Image encoding / compression
+opencv-python-headless>=4.9.0
+numpy>=1.26.0
+
+# Input injection
+pynput>=1.7.6
+
+# Clipboard monitoring
+pyperclip>=1.8.2
+
+# WebSocket client
+websockets>=12.0

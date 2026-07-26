@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: remote-desktop-signaling-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: SESSION_GRACE_MS
+        value: 60000
+    healthCheckPath: /health

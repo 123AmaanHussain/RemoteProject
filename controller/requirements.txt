@@ -1,0 +1,14 @@
+# Controller PC Client — Python Dependencies
+# Supports Python 3.11+ (including Python 3.13)
+
+# GUI framework
+PyQt6>=6.7.0
+
+# WebSocket client
+websockets>=12.0
+
+# Clipboard support
+pyperclip>=1.8.2
+
+# Image handling
+Pillow>=10.3.0

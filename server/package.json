@@ -1,0 +1,22 @@
+{
+  "name": "remote-desktop-signaling-server",
+  "version": "1.0.0",
+  "description": "High-concurrency WebRTC signaling server for Remote Desktop Application",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.10.0",
+    "pino-pretty": "^13.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
