@@ -25,6 +25,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+import pyperclip
+
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, pyqtSlot, QTimer,
 )
@@ -159,22 +161,19 @@ class MainWindow(QMainWindow):
     """
     The primary application window.
 
-    Signals (consumed by the network worker):
-        connect_requested(str):     Emitted when the user clicks Connect with a code.
-        disconnect_requested():     Emitted when the user clicks Disconnect.
-        input_ready(dict):          Forwarded input events from the viewport.
-        clipboard_send(str):        Clipboard text to send to controlled PC.
+    GUI → Network communication uses direct calls on self._network_worker
+    (thread-safe by design). Network → GUI uses pyqtSignals (delivered via
+    the GUI thread's Qt event loop).
     """
-
-    connect_requested:    pyqtSignal = pyqtSignal(str)
-    disconnect_requested: pyqtSignal = pyqtSignal()
-    input_ready:          pyqtSignal = pyqtSignal(dict)
-    clipboard_send:       pyqtSignal = pyqtSignal(str)
 
     def __init__(self, network_worker=None) -> None:
         super().__init__()
 
-        self._network_worker = network_worker  # Store reference for direct calls
+        self._network_worker = network_worker  # Direct-call reference
+
+        # Clipboard anti-loop cache
+        self._last_clipboard: Optional[str] = None
+        self._clipboard_remote_source: bool = False
 
         self.setWindowTitle(config.WINDOW_TITLE)
         self.resize(1200, 750)
@@ -183,6 +182,12 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
+
+        # Seed clipboard cache
+        try:
+            self._last_clipboard = pyperclip.paste()
+        except Exception:
+            self._last_clipboard = ""
 
     # ─── UI Construction ─────────────────────────────────────────────────────
 
@@ -321,9 +326,14 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self._connect_btn.clicked.connect(self._on_connect_clicked)
-        self._disconnect_btn.clicked.connect(self.disconnect_requested)
+        self._disconnect_btn.clicked.connect(self._on_disconnect_clicked)
         self._code_input.returnPressed.connect(self._on_connect_clicked)
-        self.viewport.input_event.connect(self.input_ready)
+        self.viewport.input_event.connect(self._on_viewport_input_event)
+
+        # Clipboard polling timer — checks every 500ms for local changes
+        self._clipboard_timer = QTimer(self)
+        self._clipboard_timer.timeout.connect(self._poll_clipboard)
+        self._clipboard_timer.start(500)
 
     # ─── Public Slots (called by NetworkWorker via signals) ───────────────────
 
@@ -334,8 +344,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"  {message}")
         self._status_label.setText(message)
 
-    @pyqtSlot()
-    def on_waiting_for_approval(self) -> None:
+    @pyqtSlot(str)
+    def on_waiting_for_approval(self, controlled_peer_id: str = "") -> None:
         self._set_status_dot("waiting")
         self.set_status("Waiting for target user approval…")
         self._connect_btn.setEnabled(False)
@@ -380,8 +390,11 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def on_clipboard_received(self, text: str) -> None:
-        """Writes remote clipboard text to local clipboard."""
-        import pyperclip
+        """Writes remote clipboard text to local clipboard (with anti-loop cache)."""
+        if text == self._last_clipboard:
+            return
+        self._last_clipboard = text
+        self._clipboard_remote_source = True
         try:
             pyperclip.copy(text)
         except Exception as exc:
@@ -391,18 +404,41 @@ class MainWindow(QMainWindow):
 
     def _on_connect_clicked(self) -> None:
         code = self._code_input.text().strip()
-        log.info("Connect button clicked. Code: '%s'", code)
         if len(code) != 6 or not code.isdigit():
-            log.warning("Invalid code: '%s' (len=%d, isdigit=%s)", code, len(code), code.isdigit())
             show_toast("Please enter a valid 6-digit numeric code.", level="warning")
             self._code_input.setFocus()
             return
-        log.info("Emitting connect_requested signal with code: %s", code)
-        self.connect_requested.emit(code)
-        # TEMPORARY: Direct call to bypass signal/slot issue (Python 3.13 compatibility)
         if self._network_worker:
-            log.info("Directly calling connect_to_session on worker")
             self._network_worker.connect_to_session(code)
+
+    def _on_disconnect_clicked(self) -> None:
+        if self._network_worker:
+            self._network_worker.disconnect_session()
+
+    def _on_viewport_input_event(self, event: dict) -> None:
+        """Routes viewport input events directly to the network worker."""
+        if self._network_worker:
+            self._network_worker.send_input_event(event)
+
+    def _poll_clipboard(self) -> None:
+        """QTimer callback: checks local clipboard for changes and sends them."""
+        if not self._network_worker:
+            return
+        try:
+            current = pyperclip.paste()
+        except Exception:
+            return
+
+        if current == self._last_clipboard:
+            return
+        self._last_clipboard = current
+
+        if self._clipboard_remote_source:
+            self._clipboard_remote_source = False
+            return
+
+        if current:
+            self._network_worker.send_clipboard(current)
 
     def _reset_to_connect(self) -> None:
         self._stack.setCurrentIndex(0)
@@ -414,6 +450,5 @@ class MainWindow(QMainWindow):
     def _set_status_dot(self, status: str) -> None:
         """Updates the header status indicator dot colour."""
         self._status_dot.setProperty("status", status)
-        # Force Qt to re-evaluate the stylesheet for the dynamic property
         self._status_dot.style().unpolish(self._status_dot)
         self._status_dot.style().polish(self._status_dot)

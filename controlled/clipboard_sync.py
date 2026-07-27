@@ -52,6 +52,7 @@ class ClipboardMonitor(threading.Thread):
 
         # The last value that was either sent or received — prevents loops
         self._last_known: Optional[str] = None
+        self._lock = threading.Lock()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -61,10 +62,10 @@ class ClipboardMonitor(threading.Thread):
         controller. Updates the local clipboard AND the cache so that the
         monitor does not re-transmit this value back.
         """
-        if text == self._last_known:
-            return
-
-        self._last_known = text
+        with self._lock:
+            if text == self._last_known:
+                return
+            self._last_known = text
 
         try:
             pyperclip.copy(text)
@@ -83,9 +84,11 @@ class ClipboardMonitor(threading.Thread):
         # Seed the cache with the current clipboard so we don't send a
         # spurious update on startup
         try:
-            self._last_known = pyperclip.paste()
+            initial = pyperclip.paste()
         except pyperclip.PyperclipException:
-            self._last_known = ""
+            initial = ""
+        with self._lock:
+            self._last_known = initial
 
         while not self._stop_event.is_set():
             time.sleep(CLIPBOARD_POLL_INTERVAL_S)
@@ -96,10 +99,12 @@ class ClipboardMonitor(threading.Thread):
                 log.warning("Clipboard read error: %s", exc)
                 continue
 
-            if current != self._last_known:
+            with self._lock:
+                if current == self._last_known:
+                    continue
                 log.debug("Local clipboard change detected: %.60r…", current)
                 self._last_known = current
-                self._fire_callback(current)
+            self._fire_callback(current)
 
         log.info("Clipboard monitor stopped")
 

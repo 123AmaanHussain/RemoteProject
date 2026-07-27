@@ -331,8 +331,10 @@ class ControlledNetworkClient:
 
     def _start_subsystems(self) -> None:
         """Starts capture, input injection, and clipboard monitoring threads."""
-        if self._capture_thread and self._capture_thread.is_alive():
-            return  # Already running
+        if (self._capture_thread and self._capture_thread.is_alive()
+                and self._input_injector and self._input_injector.is_alive()
+                and self._clipboard_mon and self._clipboard_mon.is_alive()):
+            return  # All subsystems already running
 
         self._sub_stop = threading.Event()
 

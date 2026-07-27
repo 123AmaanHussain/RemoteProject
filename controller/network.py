@@ -1,18 +1,26 @@
 """
 network.py — Controller PC WebSocket Client
 ============================================
-Runs in a QThread to keep the UI fully responsive.
-Manages the WebSocket connection to the signaling server, emitting Qt signals
-to the main window for all state changes and incoming data.
+Runs in a dedicated thread with an asyncio event loop.
+Communicates with the GUI thread via direct method calls (Main → Network)
+and pyqtSignals (Network → Main, which work because the GUI thread has a
+running Qt event loop).
 
-Threading model:
-  QApplication thread → GUI
-  NetworkWorker thread → asyncio event loop (this file)
+Main → Network (direct calls, thread-safe):
+  - connect_to_session(code)
+  - disconnect_session()
+  - send_input_event(event)
+  - send_clipboard(text)
 
-Signal flow:
-  GUI → NetworkWorker: connect_requested, disconnect_requested, input_event, clipboard_send
-  NetworkWorker → GUI: status_changed, session_active, session_denied,
-                       frame_received, clipboard_received, error_occurred
+Network → Main (Qt signals, delivered via GUI thread's event loop):
+  - status_changed(str)
+  - join_success(str)
+  - session_active()
+  - session_denied(str)
+  - disconnected(str)
+  - frame_received(bytes)
+  - clipboard_received(str)
+  - error_occurred(str)
 """
 
 from __future__ import annotations
@@ -27,7 +35,7 @@ from typing import Any, Optional
 import websockets
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 import config
 
@@ -56,48 +64,49 @@ PEER_ID: str = _get_or_create_peer_id()
 class NetworkWorker(QObject):
     """
     QObject that runs an asyncio event loop on a dedicated QThread.
-    Receives commands from the GUI via pyqtSlots and emits results back
-    as pyqtSignals.
+    Receives commands from the GUI thread via direct method calls (not Qt signals,
+    since the network thread does not run a Qt event loop).
+    Emits results back to the GUI thread via pyqtSignals (which are delivered
+    through the GUI thread's running Qt event loop).
 
-    Signals:
-        status_changed(str):     Human-readable status for the UI.
-        session_active():        Session is authorised and streaming.
-        session_denied(str):     Session was denied or expired.
-        disconnected(str):       Connection dropped (reason string).
-        frame_received(bytes):   Raw JPEG/WebP frame bytes.
-        clipboard_received(str): Clipboard text from controlled PC.
-        error_occurred(str):     User-visible error description.
+    Signals (Network → GUI, all delivered on GUI thread):
+        status_changed(str):         Human-readable status for the UI.
+        join_success(str):           Controlled peer ID on successful join.
+        session_active():            Session is authorised and streaming.
+        session_denied(str):         Session was denied or expired.
+        disconnected(str):           Connection dropped (reason string).
+        frame_received(bytes):       Raw JPEG/WebP frame bytes.
+        clipboard_received(str):     Clipboard text from controlled PC.
+        error_occurred(str):         User-visible error description.
     """
 
-    status_changed:    pyqtSignal = pyqtSignal(str)
-    session_active:    pyqtSignal = pyqtSignal()
-    session_denied:    pyqtSignal = pyqtSignal(str)
-    disconnected:      pyqtSignal = pyqtSignal(str)
-    frame_received:    pyqtSignal = pyqtSignal(bytes)
-    clipboard_received: pyqtSignal = pyqtSignal(str)
-    error_occurred:    pyqtSignal = pyqtSignal(str)
+    status_changed:      pyqtSignal = pyqtSignal(str)
+    join_success:        pyqtSignal = pyqtSignal(str)
+    session_active:      pyqtSignal = pyqtSignal()
+    session_denied:      pyqtSignal = pyqtSignal(str)
+    disconnected:        pyqtSignal = pyqtSignal(str)
+    frame_received:      pyqtSignal = pyqtSignal(bytes)
+    clipboard_received:  pyqtSignal = pyqtSignal(str)
+    error_occurred:      pyqtSignal = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._ws:   Any  = None  # websockets.WebSocketClientProtocol
+        self._ws:   Any = None
         self._code: Optional[str] = None
-        self._authorized: bool    = False
-        self._running:    bool    = False
+        self._authorized: bool = False
+        self._running: bool = False
 
-        # Pending action queue (used to bridge Qt slots → asyncio coroutines)
-        self._pending_connect_code: Optional[str] = None
-        self._should_disconnect:    bool           = False
+        # Thread-safe command queue for Main → Network communication.
+        # The GUI thread pushes commands; the asyncio loop pops them.
+        self._cmd_queue: asyncio.Queue[dict] = asyncio.Queue()
 
     # ─── QThread Entry ───────────────────────────────────────────────────────
 
     def start_network(self) -> None:
-        """
-        Called once when the QThread starts. Runs the asyncio event loop.
-        The loop continues until stop() is called from outside.
-        """
-        self._loop    = asyncio.new_event_loop()
+        """Called once when the QThread starts. Runs the asyncio event loop."""
+        self._loop = asyncio.new_event_loop()
         self._running = True
         asyncio.set_event_loop(self._loop)
         try:
@@ -116,99 +125,94 @@ class NetworkWorker(QObject):
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
 
-    # ─── Qt Slots (called from GUI thread) ───────────────────────────────────
+    # ─── Public API (called directly from GUI thread) ────────────────────────
 
-    @pyqtSlot(str)
     def connect_to_session(self, code: str) -> None:
-        """Initiates a join request for the given 6-digit code."""
-        print(f"[DEBUG] connect_to_session called with code: {code}")
-        log.info("connect_to_session called with code: %s", code)
-        log.info("Event loop ready: %s", self._loop is not None)
-        self._pending_connect_code = code
-        # The main loop will detect this and establish connection + send join request
-        log.info("Pending connect code set, main loop will handle connection")
+        """Initiates a join request for the given 6-digit code.
+        Called directly from the GUI thread (thread-safe)."""
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(
+                self._cmd_queue.put_nowait,
+                {"type": "connect", "code": code}
+            )
 
-    @pyqtSlot()
     def disconnect_session(self) -> None:
-        """Closes the current session cleanly."""
+        """Closes the current session cleanly.
+        Called directly from the GUI thread (thread-safe)."""
         self._authorized = False
-        self._code       = None
-        self.status_changed.emit("Disconnecting…")
-
-        if self._loop and self._ws:
-            asyncio.run_coroutine_threadsafe(
-                self._ws.close(1000, "User disconnected"), self._loop
+        self._code = None
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(
+                self._cmd_queue.put_nowait,
+                {"type": "disconnect"}
             )
 
-    @pyqtSlot(dict)
     def send_input_event(self, event: dict) -> None:
-        """Forwards a mouse/keyboard input event to the controlled PC."""
+        """Forwards a mouse/keyboard input event to the controlled PC.
+        Called directly from the GUI thread (thread-safe)."""
         if not self._authorized or self._code is None:
             return
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._send({
-                    "type":    "input",
-                    "code":    self._code,
-                    "payload": event,
-                }),
-                self._loop,
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(
+                self._cmd_queue.put_nowait,
+                {"type": "input", "payload": event}
             )
 
-    @pyqtSlot(str)
     def send_clipboard(self, text: str) -> None:
-        """Sends local clipboard text to the controlled PC."""
+        """Sends local clipboard text to the controlled PC.
+        Called directly from the GUI thread (thread-safe)."""
         if not self._authorized or self._code is None:
             return
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._send({
-                    "type": "clipboard",
-                    "code": self._code,
-                    "text": text,
-                }),
-                self._loop,
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(
+                self._cmd_queue.put_nowait,
+                {"type": "clipboard", "text": text}
             )
 
     # ─── Asyncio Main Loop ───────────────────────────────────────────────────
 
     async def _main_loop(self) -> None:
-        """
-        Persistent connection loop with exponential backoff.
-        Waits for a connect request before initiating a connection.
-        """
-        backoff      = config.RECONNECT_BACKOFF_INITIAL_S
-        total_down   = 0.0
+        """Persistent connection loop with exponential backoff."""
+        backoff = config.RECONNECT_BACKOFF_INITIAL_S
+        total_down = 0.0
         was_connected = False
+        current_code: Optional[str] = None
 
         while self._running:
-            # ── Wait for a connect request ────────────────────────────────
-            if self._pending_connect_code is None:
-                await asyncio.sleep(0.1)
-                continue
-
-            code = self._pending_connect_code
-            self._pending_connect_code = None
-            self.status_changed.emit("Connecting to server…")
+            # ── Process command queue ────────────────────────────────────
+            if current_code is None:
+                cmd = await self._wait_for_connect_cmd()
+                if cmd is None:
+                    continue
+                current_code = cmd["code"]
+                self.status_changed.emit("Connecting to server…")
 
             try:
                 async with websockets.connect(
                     config.SIGNALING_URL,
                     ping_interval=20,
                     ping_timeout=10,
-                    max_size=20 * 1024 * 1024,  # 20 MB — allow large frames
+                    max_size=20 * 1024 * 1024,
                 ) as ws:
-                    self._ws     = ws
-                    backoff      = config.RECONNECT_BACKOFF_INITIAL_S
-                    total_down   = 0.0
+                    self._ws = ws
+                    backoff = config.RECONNECT_BACKOFF_INITIAL_S
+                    total_down = 0.0
                     was_connected = True
+                    self._code = current_code
                     self.status_changed.emit("Connected — sending join request…")
 
-                    # Send join request
-                    await self._join_session(code)
+                    await self._join_session(current_code)
 
-                    # Receive messages
-                    await self._receive_loop()
+                    reader_task = asyncio.create_task(self._receive_loop())
+                    commander_task = asyncio.create_task(self._command_processor())
+
+                    done, pending = await asyncio.wait(
+                        [reader_task, commander_task],
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    for task in pending:
+                        task.cancel()
 
             except (ConnectionClosedOK, ConnectionClosedError) as exc:
                 log.warning("WebSocket closed: %s", exc)
@@ -218,25 +222,28 @@ class NetworkWorker(QObject):
                     f"Network Interface Error: {exc}\n\n"
                     "Check that the server is running and the host address is correct."
                 )
+                break
             except Exception as exc:
                 log.exception("Unexpected error: %s", exc)
                 self.error_occurred.emit(f"Unexpected error: {exc}")
+                break
             finally:
-                self._ws         = None
+                self._ws = None
                 self._authorized = False
 
             if not self._running:
                 break
 
-            # ── Exponential backoff before retry ──────────────────────────
-            if was_connected and self._code:
+            # ── Exponential backoff before reconnection ──────────────────
+            if was_connected and current_code and self._code:
                 total_down += backoff
 
                 if total_down >= config.RECONNECT_ALERT_AFTER_S:
                     self.disconnected.emit(
                         f"Disconnected for {int(total_down)}s — session may have expired."
                     )
-                    self._code = None  # Give up; require fresh code entry
+                    self._code = None
+                    current_code = None
                     break
 
                 self.status_changed.emit(f"Reconnecting in {backoff:.0f}s…")
@@ -248,11 +255,49 @@ class NetworkWorker(QObject):
                     slept += 0.5
 
                 backoff = min(backoff * 2, config.RECONNECT_BACKOFF_MAX_S)
-
-                # Attempt reconnect with saved code
-                self._pending_connect_code = code
             else:
-                break
+                current_code = None
+
+    async def _wait_for_connect_cmd(self) -> Optional[dict]:
+        """Wait for a 'connect' command from the GUI thread, or return None."""
+        while self._running:
+            try:
+                cmd = await asyncio.wait_for(self._cmd_queue.get(), timeout=0.2)
+                if cmd.get("type") == "connect":
+                    self.status_changed.emit("Connecting to server…")
+                    return cmd
+            except asyncio.TimeoutError:
+                continue
+        return None
+
+    async def _command_processor(self) -> None:
+        """Process commands from the GUI thread during an active connection."""
+        while self._running and self._ws:
+            try:
+                cmd = await asyncio.wait_for(self._cmd_queue.get(), timeout=0.2)
+                cmd_type = cmd.get("type")
+
+                if cmd_type == "disconnect":
+                    await self._ws.close(1000, "User disconnected")
+                    break
+                elif cmd_type == "input":
+                    if not self._authorized:
+                        continue
+                    await self._send({
+                        "type": "input",
+                        "code": self._code,
+                        "payload": cmd["payload"],
+                    })
+                elif cmd_type == "clipboard":
+                    if not self._authorized:
+                        continue
+                    await self._send({
+                        "type": "clipboard",
+                        "code": self._code,
+                        "text": cmd["text"],
+                    })
+            except asyncio.TimeoutError:
+                continue
 
     # ─── Session Join ────────────────────────────────────────────────────────
 
@@ -260,15 +305,13 @@ class NetworkWorker(QObject):
         if self._ws is None:
             log.error("Cannot join: WebSocket is None")
             return
-        self._code = code
         payload = {
-            "type":   "join",
-            "code":   code,
+            "type": "join",
+            "code": code,
             "peerId": PEER_ID,
         }
         log.info("Sending join request: %s", payload)
         await self._send(payload)
-        log.info("Join request sent for code: %s", code)
 
     # ─── Receive Loop ────────────────────────────────────────────────────────
 
@@ -276,12 +319,8 @@ class NetworkWorker(QObject):
         """Reads all incoming messages and dispatches them."""
         async for raw in self._ws:
             if isinstance(raw, bytes):
-                # Binary frame = video frame
                 if self._authorized:
-                    log.info("Received binary frame: %d bytes", len(raw))
                     self.frame_received.emit(raw)
-                else:
-                    log.warning("Received frame but not authorized")
                 continue
 
             try:
@@ -296,18 +335,16 @@ class NetworkWorker(QObject):
 
     async def _dispatch(self, msg: dict[str, Any]) -> None:
         msg_type = msg.get("type", "")
-        log.info("Received message: %s - Full: %s", msg_type, msg)
+        log.info("Controller received: %s", msg_type)
 
         if msg_type == "join_success":
-            self.status_changed.emit("Waiting for target user approval…")
-            # Inform the main window (separate slot for styled display)
-            # We emit status_changed which the window catches
+            ctrl_id = msg.get("controlledPeerId", "unknown")
+            self.join_success.emit(ctrl_id)
 
         elif msg_type == "error":
             err_msg = msg.get("message", "An error occurred on the server.")
             log.warning("Server returned error: %s", err_msg)
             self.error_occurred.emit(err_msg)
-            self.session_denied.emit(err_msg)
 
         elif msg_type == "session_active":
             self._authorized = True
@@ -316,12 +353,12 @@ class NetworkWorker(QObject):
 
         elif msg_type == "session_denied":
             self._authorized = False
-            self._code       = None
+            self._code = None
             self.session_denied.emit("The remote user denied the connection request.")
 
         elif msg_type == "session_revoked":
             self._authorized = False
-            self._code       = None
+            self._code = None
             reason = msg.get("message", "Session was revoked by the remote user.")
             self.session_denied.emit(reason)
 
@@ -332,11 +369,11 @@ class NetworkWorker(QObject):
 
         elif msg_type == "peer_reconnected":
             self._authorized = True
-            self.status_changed.emit("🔴 Session Active — reconnected")
+            self.status_changed.emit("Session Active — reconnected")
 
         elif msg_type == "session_expired":
             self._authorized = False
-            self._code       = None
+            self._code = None
             reason = msg.get("message", "Session expired — grace period ended.")
             self.disconnected.emit(reason)
 
@@ -344,19 +381,11 @@ class NetworkWorker(QObject):
             text = msg.get("text", "")
             self.clipboard_received.emit(text)
 
-        # ── WebRTC Signaling Relay Hooks ──────────────────────────────────
         elif msg_type == "sdp_answer":
             log.info("[WebRTC Hook] SDP Answer received — aiortc handler here")
-            # TODO: Pass msg['sdp'] to aiortc RTCPeerConnection.setRemoteDescription()
 
         elif msg_type == "ice_candidate":
             log.info("[WebRTC Hook] ICE Candidate received — aiortc handler here")
-            # TODO: Pass msg['candidate'] to aiortc RTCPeerConnection.addIceCandidate()
-
-        elif msg_type == "error":
-            server_msg = msg.get("message", "Unknown server error")
-            log.error("Server error: %s", server_msg)
-            self.error_occurred.emit(f"Server Error: {server_msg}")
 
         else:
             log.debug("Unhandled message type: %s", msg_type)
@@ -374,7 +403,7 @@ class NetworkWorker(QObject):
 
 class NetworkThread(QThread):
     """
-    QThread wrapper that owns a NetworkWorker and exposes its signals.
+    QThread wrapper that owns a NetworkWorker.
     The worker is moved to this thread so all asyncio I/O runs off the GUI thread.
     """
 

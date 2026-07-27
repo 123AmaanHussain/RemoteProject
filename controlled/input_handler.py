@@ -115,10 +115,11 @@ class InputInjector(threading.Thread):
         # Bounded queue — at most 256 pending events to limit memory
         self._event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
 
-        # Local mouse intercept state
+        # Local mouse intercept state (protected by lock, written by pynput listener)
         self._pause_injection: bool     = False
         self._pause_until:     float    = 0.0
         self._last_local_pos:  tuple[int, int] = (0, 0)
+        self._intercept_lock = threading.Lock()
 
         # Start the local mouse listener for intercept detection
         self._local_listener = ms.Listener(on_move=self._on_local_move)
@@ -161,11 +162,13 @@ class InputInjector(threading.Thread):
                 continue
 
             # Check if local-user intercept has expired
-            if self._pause_injection and time.monotonic() >= self._pause_until:
-                self._pause_injection = False
-                log.debug("Remote input injection resumed after local intercept")
+            with self._intercept_lock:
+                if self._pause_injection and time.monotonic() >= self._pause_until:
+                    self._pause_injection = False
+                    log.debug("Remote input injection resumed after local intercept")
+                injection_paused = self._pause_injection
 
-            if not self._pause_injection:
+            if not injection_paused:
                 self._dispatch(event)
 
             # Pacing delay — gives the OS event queue breathing room
@@ -293,15 +296,16 @@ class InputInjector(threading.Thread):
         If movement exceeds the intercept threshold, remote injection is
         paused for LOCAL_MOUSE_PAUSE_S seconds.
         """
-        lx, ly = self._last_local_pos
-        delta = ((x - lx) ** 2 + (y - ly) ** 2) ** 0.5
+        with self._intercept_lock:
+            lx, ly = self._last_local_pos
+            delta = ((x - lx) ** 2 + (y - ly) ** 2) ** 0.5
 
-        if delta >= LOCAL_MOUSE_INTERCEPT_PX and not self._pause_injection:
-            self._pause_injection = True
-            self._pause_until     = time.monotonic() + LOCAL_MOUSE_PAUSE_S
-            log.debug(
-                "Local mouse moved %.1fpx — pausing remote injection for %.1fs",
-                delta, LOCAL_MOUSE_PAUSE_S,
-            )
+            if delta >= LOCAL_MOUSE_INTERCEPT_PX and not self._pause_injection:
+                self._pause_injection = True
+                self._pause_until     = time.monotonic() + LOCAL_MOUSE_PAUSE_S
+                log.debug(
+                    "Local mouse moved %.1fpx — pausing remote injection for %.1fs",
+                    delta, LOCAL_MOUSE_PAUSE_S,
+                )
 
-        self._last_local_pos = (x, y)
+            self._last_local_pos = (x, y)

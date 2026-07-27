@@ -50,32 +50,25 @@ def main() -> int:
     window = MainWindow(network_worker=net_thread.worker)
     window.show()
 
-    # ── Pass main window reference to network worker for direct calls (Python 3.13 compatibility)
-    net_thread.worker._main_window = window
-
-    # ── Wire signals: GUI → Network ───────────────────────────────────────
-    # The user clicked Connect with a code
-    window.connect_requested.connect(net_thread.worker.connect_to_session)
-
-    # The user clicked Disconnect
-    window.disconnect_requested.connect(net_thread.worker.disconnect_session)
-
-    # Mouse/keyboard events from viewport → network send
-    window.input_ready.connect(net_thread.worker.send_input_event)
-
-    # Local clipboard changes → send to controlled PC
-    window.clipboard_send.connect(net_thread.worker.send_clipboard)
-
     # ── Wire signals: Network → GUI ───────────────────────────────────────
+    # These work because the GUI thread runs a Qt event loop that delivers
+    # queued signals emitted from other threads.
     worker = net_thread.worker
 
     worker.status_changed.connect(window.set_status)
+    worker.join_success.connect(window.on_waiting_for_approval)
     worker.session_active.connect(window.on_session_active)
     worker.session_denied.connect(window.on_session_denied)
     worker.disconnected.connect(window.on_disconnected)
     worker.error_occurred.connect(window.on_error)
     worker.frame_received.connect(window.on_frame_received)
     worker.clipboard_received.connect(window.on_clipboard_received)
+
+    # ── GUI → Network: direct calls via worker reference ──────────────────
+    # NOT connected via Qt signals — the network thread runs an asyncio
+    # event loop, not a Qt event loop, so queued signals are never delivered.
+    # Instead, the MainWindow stores the worker reference and calls these
+    # methods directly (they are thread-safe by design).
 
     # ── Start network thread ──────────────────────────────────────────────
     net_thread.start()

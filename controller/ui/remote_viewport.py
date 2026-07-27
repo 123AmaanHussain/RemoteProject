@@ -162,12 +162,14 @@ class RemoteViewport(QWidget):
                 window.windowFlags() & ~Qt.WindowType.FramelessWindowHint
             )
             window.showNormal()
+            window.show()
             self._is_fullscreen = False
         else:
             window.setWindowFlags(
                 window.windowFlags() | Qt.WindowType.FramelessWindowHint
             )
             window.showFullScreen()
+            window.show()
             self._is_fullscreen = True
 
     # ─── Painting ────────────────────────────────────────────────────────────
