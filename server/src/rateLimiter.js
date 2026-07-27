@@ -8,7 +8,7 @@
 
 'use strict';
 
-const MAX_TOKENS = parseInt(process.env.RATE_LIMIT_MAX ?? '120', 10);
+const MAX_TOKENS = parseInt(process.env.RATE_LIMIT_MAX ?? '1000', 10);
 const WINDOW_MS  = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? '1000', 10);
 
 /** @type {Map<import('ws').WebSocket, { tokens: number, windowStart: number }>} */

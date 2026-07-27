@@ -151,7 +151,9 @@ class NetworkWorker(QObject):
         """Forwards a mouse/keyboard input event to the controlled PC.
         Called directly from the GUI thread (thread-safe)."""
         if not self._authorized or self._code is None:
+            log.debug("Input event dropped: not authorized or no code")
             return
+        log.info("Sending input event: %s", event)
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(
                 self._cmd_queue.put_nowait,
@@ -162,7 +164,9 @@ class NetworkWorker(QObject):
         """Sends local clipboard text to the controlled PC.
         Called directly from the GUI thread (thread-safe)."""
         if not self._authorized or self._code is None:
+            log.debug("Clipboard send dropped: not authorized or no code")
             return
+        log.info("Sending clipboard text: %.60r...", text)
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(
                 self._cmd_queue.put_nowait,
@@ -282,7 +286,9 @@ class NetworkWorker(QObject):
                     break
                 elif cmd_type == "input":
                     if not self._authorized:
+                        log.debug("Input command dropped: not authorized")
                         continue
+                    log.info("Processing input command: %s", cmd["payload"])
                     await self._send({
                         "type": "input",
                         "code": self._code,
@@ -290,7 +296,9 @@ class NetworkWorker(QObject):
                     })
                 elif cmd_type == "clipboard":
                     if not self._authorized:
+                        log.debug("Clipboard command dropped: not authorized")
                         continue
+                    log.info("Processing clipboard command: %.60r...", cmd["text"])
                     await self._send({
                         "type": "clipboard",
                         "code": self._code,
