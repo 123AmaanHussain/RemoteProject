@@ -249,6 +249,7 @@ class RemoteViewport(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus()
+        log.info("Viewport clicked, focus set: %s", self.hasFocus())
         coords = self._viewport_to_normalised(event.position().x(), event.position().y())
         button = _MOUSE_BUTTON_MAP.get(event.button(), "left")
         if coords:
@@ -301,7 +302,10 @@ class RemoteViewport(QWidget):
 
         key_str = self._resolve_key(event)
         if key_str:
+            log.info("Keyboard press: %s (Qt key: %d, hasFocus: %s)", key_str, key_val, self.hasFocus())
             self.input_event.emit({"kind": "key_press", "key": key_str})
+        else:
+            log.warning("Unresolved key press: Qt key=%d, text=%r, hasFocus: %s", key_val, event.text(), self.hasFocus())
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
         if event.isAutoRepeat():
@@ -313,7 +317,10 @@ class RemoteViewport(QWidget):
 
         key_str = self._resolve_key(event)
         if key_str:
+            log.info("Keyboard release: %s (Qt key: %d)", key_str, key_val)
             self.input_event.emit({"kind": "key_release", "key": key_str})
+        else:
+            log.warning("Unresolved key release: Qt key=%d, text=%r", key_val, event.text())
 
     def _resolve_key(self, event: QKeyEvent) -> str | None:
         """
