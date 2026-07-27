@@ -319,6 +319,7 @@ class ControlledNetworkClient:
                 continue
 
             try:
+                log.info("Sending frame: %d bytes", len(frame_bytes))
                 await self._ws.send(frame_bytes)
             except (ConnectionClosedError, ConnectionClosedOK):
                 log.warning("Stream frame send failed — connection closed")

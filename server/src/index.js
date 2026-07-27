@@ -63,12 +63,12 @@ fastify.register(async (instance) => {
   instance.get('/signal', { websocket: true }, (socket, _req) => {
     fastify.log.info('New WebSocket connection established');
 
-    // ── Incoming text message ───────────────────────────────────────────
+    // ── Incoming message (text or binary) ────────────────────────────────
     socket.on('message', (rawData, isBinary) => {
       if (isBinary) {
-        // Binary frames are NOT expected on the control channel.
-        // The video stream travels over WebRTC or a separate WS connection.
-        fastify.log.warn('Unexpected binary frame on control channel — ignored');
+        // Binary frame = video stream data from controlled PC
+        // Forward to controller peer if session is active
+        messageRouter.handleBinaryFrame(fastify, socket, rawData);
         return;
       }
       messageRouter.handleMessage(fastify, socket, rawData);

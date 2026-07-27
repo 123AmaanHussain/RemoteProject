@@ -354,4 +354,45 @@ function handleClose(fastify, socket) {
   });
 }
 
-module.exports = { handleMessage, handleClose, safeSend };
+/**
+ * Handles binary frames (video stream data) from the controlled PC.
+ * Forwards raw binary data to the controller peer if the session is active.
+ * @param {import('fastify').FastifyInstance} fastify
+ * @param {import('ws').WebSocket} socket
+ * @param {Buffer} binaryData
+ */
+function handleBinaryFrame(fastify, socket, binaryData) {
+  const result = sessionManager.findSessionBySocket(socket);
+  if (!result) {
+    fastify.log.warn('Binary frame from unregistered socket — ignored');
+    return;
+  }
+
+  const { session, role } = result;
+
+  // Only controlled PC should send binary frames
+  if (role !== 'controlled') {
+    fastify.log.warn('Binary frame from controller (should only come from controlled) — ignored');
+    return;
+  }
+
+  if (session.status !== 'ACTIVE' || !session.authorized) {
+    fastify.log.warn(
+      { code: session.code, status: session.status },
+      'Binary frame from inactive/unauthorized session — ignored'
+    );
+    return;
+  }
+
+  // Forward binary frame to controller
+  if (session.controllerSocket && session.controllerSocket.readyState === 1) {
+    session.controllerSocket.send(binaryData);
+  } else {
+    fastify.log.warn(
+      { code: session.code },
+      'Controller socket not available for binary frame — dropped'
+    );
+  }
+}
+
+module.exports = { handleMessage, handleBinaryFrame, handleClose, safeSend };
